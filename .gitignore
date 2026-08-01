@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+downloads/
+.ffmpeg-downloads/
+.buildozer/
+build/
+dist/
+.idea/
+.vscode/

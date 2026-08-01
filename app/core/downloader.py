@@ -1,0 +1,358 @@
+import os
+import platform as py_platform
+import shutil
+import stat
+from urllib.parse import urlparse
+from pathlib import Path
+
+import yt_dlp
+from kivy.app import App
+from kivy.utils import platform
+
+try:
+    from yt_dlp.networking.impersonate import ImpersonateTarget
+except Exception:
+    ImpersonateTarget = None
+
+
+PRESET_FORMATS = [
+    {
+        "label": "Best video + audio",
+        "format_id": "bestvideo+bestaudio/best",
+        "ext": "auto",
+        "height": "",
+        "note": "Needs ffmpeg for merge on many sites",
+    },
+    {
+        "label": "Best MP4 if available",
+        "format_id": "best[ext=mp4]/best",
+        "ext": "mp4",
+        "height": "",
+        "note": "Good compatibility",
+    },
+    {
+        "label": "Best audio",
+        "format_id": "bestaudio/best",
+        "ext": "audio",
+        "height": "",
+        "note": "Audio only",
+    },
+]
+
+TIKTOK_IMPERSONATE_TARGET = (
+    ImpersonateTarget.from_str("safari:ios") if ImpersonateTarget else None
+)
+
+COOKIE_MODE_NONE = "No cookies"
+COOKIE_MODE_AUTO_FILE = "Auto cookies.txt"
+COOKIE_MODE_CUSTOM_FILE = "Custom cookies.txt"
+COOKIE_MODE_CHROME = "Chrome desktop"
+COOKIE_MODE_EDGE = "Edge desktop"
+COOKIE_MODE_FIREFOX = "Firefox desktop"
+
+COOKIE_MODES = (
+    COOKIE_MODE_NONE,
+    COOKIE_MODE_AUTO_FILE,
+    COOKIE_MODE_CUSTOM_FILE,
+    COOKIE_MODE_CHROME,
+    COOKIE_MODE_EDGE,
+    COOKIE_MODE_FIREFOX,
+)
+
+
+class YtDlpLogBridge:
+    def __init__(self, logger):
+        self.logger = logger
+
+    def debug(self, message):
+        if message and not str(message).startswith("[debug]"):
+            self.logger(message)
+
+    def warning(self, message):
+        self.logger(f"WARNING: {message}")
+
+    def error(self, message):
+        self.logger(f"ERROR: {message}")
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _current_android_abi() -> str:
+    machine = py_platform.machine().lower()
+    if machine in {"aarch64", "arm64", "arm64-v8a"}:
+        return "arm64-v8a"
+    if machine in {"armv7l", "armeabi-v7a"}:
+        return "armeabi-v7a"
+    if machine in {"x86_64", "amd64"}:
+        return "x86_64"
+    return machine
+
+
+def _chmod_executable(path: Path) -> None:
+    try:
+        path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    except OSError:
+        pass
+
+
+def ensure_ffmpeg_runtime() -> str | None:
+    """Return a directory usable as yt-dlp's ffmpeg_location."""
+    if platform != "android":
+        ffmpeg = shutil.which("ffmpeg")
+        ffprobe = shutil.which("ffprobe")
+        if ffmpeg and ffprobe:
+            return str(Path(ffmpeg).parent)
+        return None
+
+    app = App.get_running_app()
+    abi = _current_android_abi()
+    bundled_dir = _project_root() / "bin" / "android" / abi
+    runtime_dir = Path(app.user_data_dir) / "bin" / abi
+    runtime_lib_dir = runtime_dir / "lib"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    runtime_lib_dir.mkdir(parents=True, exist_ok=True)
+
+    copied_any = False
+    for name in ("ffmpeg", "ffprobe"):
+        source = bundled_dir / name
+        target = runtime_dir / name
+        if source.exists():
+            if not target.exists() or source.stat().st_size != target.stat().st_size:
+                shutil.copyfile(source, target)
+            _chmod_executable(target)
+            copied_any = True
+
+    source_lib_dir = bundled_dir / "lib"
+    if source_lib_dir.exists():
+        for source in source_lib_dir.glob("*.so"):
+            target = runtime_lib_dir / source.name
+            if not target.exists() or source.stat().st_size != target.stat().st_size:
+                shutil.copyfile(source, target)
+
+    current_ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+    paths = [str(runtime_lib_dir)]
+    if current_ld_path:
+        paths.append(current_ld_path)
+    os.environ["LD_LIBRARY_PATH"] = ":".join(paths)
+
+    return str(runtime_dir) if copied_any else None
+
+
+def get_download_dir() -> Path:
+    if platform == "android":
+        public_dir = Path("/storage/emulated/0/Download/AntiDown")
+        try:
+            public_dir.mkdir(parents=True, exist_ok=True)
+            probe = public_dir / ".write_test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return public_dir
+        except OSError:
+            pass
+
+    app = App.get_running_app()
+    private_dir = Path(app.user_data_dir) / "downloads" if app else _project_root() / "downloads"
+    private_dir.mkdir(parents=True, exist_ok=True)
+    return private_dir
+
+
+def request_android_permissions() -> None:
+    if platform != "android":
+        return
+    try:
+        from android.permissions import request_permissions
+
+        permissions = [
+            "android.permission.INTERNET",
+            "android.permission.READ_EXTERNAL_STORAGE",
+            "android.permission.WRITE_EXTERNAL_STORAGE",
+            "android.permission.POST_NOTIFICATIONS",
+            "android.permission.READ_MEDIA_VIDEO",
+            "android.permission.READ_MEDIA_AUDIO",
+        ]
+        request_permissions(permissions)
+    except Exception:
+        pass
+
+
+class VideoDownloader:
+    def __init__(self, logger=None, progress=None, cookie_mode=COOKIE_MODE_NONE, cookie_value=""):
+        self.logger = logger or (lambda message: None)
+        self.progress = progress or (lambda percent, status: None)
+        self.cookie_mode = cookie_mode or COOKIE_MODE_NONE
+        self.cookie_value = (cookie_value or "").strip()
+        self.ffmpeg_location = ensure_ffmpeg_runtime()
+        self.output_dir = get_download_dir()
+
+    def _is_tiktok_url(self, url: str) -> bool:
+        hostname = urlparse(url).hostname or ""
+        return hostname.endswith("tiktok.com")
+
+    def _default_cookie_file(self) -> Path:
+        return self.output_dir / "cookies.txt"
+
+    def _browser_cookie_source(self) -> str | None:
+        browsers = {
+            COOKIE_MODE_CHROME: "chrome",
+            COOKIE_MODE_EDGE: "edge",
+            COOKIE_MODE_FIREFOX: "firefox",
+        }
+        return browsers.get(self.cookie_mode)
+
+    def _apply_cookie_options(self, opts: dict) -> None:
+        if self.cookie_mode == COOKIE_MODE_AUTO_FILE:
+            cookie_file = self._default_cookie_file()
+            if cookie_file.exists():
+                opts["cookiefile"] = str(cookie_file)
+                self.logger(f"Using cookies file: {cookie_file}")
+            else:
+                self.logger(f"No cookies file found at: {cookie_file}")
+            return
+
+        if self.cookie_mode == COOKIE_MODE_CUSTOM_FILE:
+            if not self.cookie_value:
+                self.logger("Custom cookies selected but path is empty.")
+                return
+            cookie_file = Path(self.cookie_value).expanduser()
+            if cookie_file.exists():
+                opts["cookiefile"] = str(cookie_file)
+                self.logger(f"Using cookies file: {cookie_file}")
+            else:
+                self.logger(f"Cookies file not found: {cookie_file}")
+            return
+
+        browser = self._browser_cookie_source()
+        if browser:
+            if platform == "android":
+                self.logger("Browser cookie extraction is not available on Android. Use cookies.txt.")
+                return
+            profile = self.cookie_value or None
+            opts["cookiesfrombrowser"] = (browser, profile, None, None)
+            label = f"{browser}:{profile}" if profile else browser
+            self.logger(f"Using cookies from browser: {label}")
+
+    def _base_options(self, url: str | None = None, *, tiktok_fallback: bool = False) -> dict:
+        opts = {
+            "quiet": True,
+            "noprogress": True,
+            "no_warnings": True,
+            "ignoreerrors": False,
+            "noplaylist": True,
+            "cachedir": False,
+            "encoding": "utf-8",
+            "no_color": True,
+            "logger": YtDlpLogBridge(self.logger),
+        }
+        if self.ffmpeg_location:
+            opts["ffmpeg_location"] = self.ffmpeg_location
+        self._apply_cookie_options(opts)
+        if url and self._is_tiktok_url(url):
+            if TIKTOK_IMPERSONATE_TARGET:
+                opts["impersonate"] = TIKTOK_IMPERSONATE_TARGET
+            if tiktok_fallback:
+                opts["extractor_args"] = {
+                    "tiktok": {
+                        "api_hostname": ["api19-normal-c-useast1a.tiktokv.com"],
+                    }
+                }
+        return opts
+
+    def extract_info(self, url: str) -> dict:
+        opts = self._base_options(url)
+        opts["skip_download"] = True
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(url, download=False)
+        except Exception as first_error:
+            if not self._is_tiktok_url(url):
+                raise
+            self.logger("TikTok normal extraction failed. Retrying with alternate API host...")
+            fallback_opts = self._base_options(url, tiktok_fallback=True)
+            fallback_opts["skip_download"] = True
+            try:
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                    return ydl.extract_info(url, download=False)
+            except Exception:
+                raise first_error
+
+    def list_formats(self, info: dict) -> list[dict]:
+        rows = list(PRESET_FORMATS)
+        seen = {row["format_id"] for row in rows}
+
+        for item in info.get("formats") or []:
+            format_id = item.get("format_id")
+            if not format_id or format_id in seen:
+                continue
+            seen.add(format_id)
+
+            height = item.get("height") or ""
+            ext = item.get("ext") or ""
+            vcodec = item.get("vcodec") or ""
+            acodec = item.get("acodec") or ""
+            filesize = item.get("filesize") or item.get("filesize_approx")
+            size_note = f"{round(filesize / 1024 / 1024, 1)} MB" if filesize else ""
+            codec_note = []
+            if vcodec and vcodec != "none":
+                codec_note.append("video")
+            if acodec and acodec != "none":
+                codec_note.append("audio")
+
+            label_parts = [format_id]
+            if height:
+                label_parts.append(f"{height}p")
+            if ext:
+                label_parts.append(ext)
+            if size_note:
+                label_parts.append(size_note)
+
+            rows.append(
+                {
+                    "label": " | ".join(label_parts),
+                    "format_id": format_id,
+                    "ext": ext,
+                    "height": height,
+                    "note": ", ".join(codec_note),
+                }
+            )
+
+        return rows
+
+    def download(self, url: str, format_id: str) -> None:
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        outtmpl = str(self.output_dir / "%(title).80B [%(id)s] [%(format_id)s].%(ext)s")
+
+        info = self.extract_info(url)
+        opts = self._base_options(url, tiktok_fallback=self._is_tiktok_url(url))
+        opts.update(
+            {
+                "format": format_id,
+                "outtmpl": outtmpl,
+                "merge_output_format": "mp4",
+                "progress_hooks": [self._progress_hook],
+            }
+        )
+
+        self.logger(f"Saving to: {self.output_dir}")
+        if self.ffmpeg_location:
+            self.logger(f"Using ffmpeg: {self.ffmpeg_location}")
+        else:
+            self.logger("ffmpeg not found. Some high quality formats may fail.")
+
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.process_ie_result(info, download=True)
+
+    def _progress_hook(self, data: dict) -> None:
+        status = data.get("status", "")
+        if status == "downloading":
+            total = data.get("total_bytes") or data.get("total_bytes_estimate") or 0
+            downloaded = data.get("downloaded_bytes") or 0
+            percent = int(downloaded * 100 / total) if total else 0
+            speed = data.get("_speed_str") or ""
+            eta = data.get("_eta_str") or ""
+            self.progress(percent, f"Downloading {percent}% {speed} ETA {eta}".strip())
+        elif status == "finished":
+            self.progress(100, "Download finished. Merging/converting if needed...")
+        else:
+            self.progress(0, status or "Working")

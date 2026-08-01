@@ -1,0 +1,12 @@
+kivy
+yt-dlp
+certifi
+requests
+urllib3
+websockets
+mutagen
+pycryptodomex
+brotli
+cffi
+curl-cffi
+yt-dlp-ejs
