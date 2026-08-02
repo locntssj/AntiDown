@@ -27,6 +27,18 @@ buildozer android debug
 
 The APK will be created under `bin/`.
 
+## Build APK on Google Colab
+
+Use `colab_build_antidown.ipynb` to build on Google's Colab runtime instead of your local Windows machine.
+
+Direct Colab link:
+
+```text
+https://colab.research.google.com/github/locntssj/AntiDown/blob/main/colab_build_antidown.ipynb
+```
+
+Open the notebook, choose `Runtime > Run all`, and wait for the APK download prompt at the end. The first build can take 20-45 minutes because Colab needs to download Android SDK/NDK and compile dependencies.
+
 ## Download path
 
 On Android, the app tries to save to:
