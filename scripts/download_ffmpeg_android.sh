@@ -35,6 +35,10 @@ download_one() {
   cp "$ffprobe" "$target_dir/ffprobe.bin"
   chmod +x "$target_dir/ffmpeg" "$target_dir/ffprobe" "$target_dir/ffmpeg.bin" "$target_dir/ffprobe.bin"
 
+  mkdir -p "$target_dir/native"
+  cp "$ffmpeg" "$target_dir/native/libantidown_ffmpeg.so"
+  cp "$ffprobe" "$target_dir/native/libantidown_ffprobe.so"
+
   local lib_dir
   lib_dir="$(find "$extract_dir" -type d -name lib | head -n 1)"
   if [[ -n "$lib_dir" ]]; then

@@ -44,6 +44,10 @@ foreach ($asset in $assets) {
     Copy-Item -LiteralPath $ffprobe.FullName -Destination (Join-Path $targetDir "ffprobe") -Force
     Copy-Item -LiteralPath $ffmpeg.FullName -Destination (Join-Path $targetDir "ffmpeg.bin") -Force
     Copy-Item -LiteralPath $ffprobe.FullName -Destination (Join-Path $targetDir "ffprobe.bin") -Force
+    $nativeTarget = Join-Path $targetDir "native"
+    New-Item -ItemType Directory -Force -Path $nativeTarget | Out-Null
+    Copy-Item -LiteralPath $ffmpeg.FullName -Destination (Join-Path $nativeTarget "libantidown_ffmpeg.so") -Force
+    Copy-Item -LiteralPath $ffprobe.FullName -Destination (Join-Path $nativeTarget "libantidown_ffprobe.so") -Force
 
     $libSource = Get-ChildItem -Path $extractDir -Recurse -Directory -Filter "lib" | Select-Object -First 1
     if ($libSource) {

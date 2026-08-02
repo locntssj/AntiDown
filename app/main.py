@@ -98,7 +98,6 @@ class AntiDownApp(App):
     title = "AntiDown"
 
     def build(self):
-        request_android_permissions()
         self.info = None
         self.formats = []
         self.selected_format = "bestvideo+bestaudio/best"
@@ -133,7 +132,6 @@ class AntiDownApp(App):
 
         scroll.add_widget(content)
         root.add_widget(scroll)
-        self.bind_android_share()
         Clock.schedule_once(lambda *_: self.apply_initial_shared_url(), 0.4)
         return root
 
@@ -347,6 +345,15 @@ class AntiDownApp(App):
         )
         content.add_widget(permission_button)
 
+        ffmpeg_check_button = AppButton(
+            text="Kiểm tra ffmpeg",
+            fill_color=COLORS["accent_soft"],
+            text_color=COLORS["accent_dark"],
+        )
+        ffmpeg_check_button.height = dp(40)
+        ffmpeg_check_button.bind(on_press=lambda *_: self.check_ffmpeg_runtime())
+        content.add_widget(ffmpeg_check_button)
+
         action_row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
         cancel_button = AppButton(
             text="Đóng",
@@ -418,6 +425,14 @@ class AntiDownApp(App):
         self.write_log(f"Đã lưu Settings. Thư mục lưu: {self.current_save_dir()}")
         popup.dismiss()
 
+    def check_ffmpeg_runtime(self):
+        self.write_log("Đang kiểm tra ffmpeg...")
+        downloader = self.get_downloader()
+        if downloader.ffmpeg_location:
+            self.write_log(f"ffmpeg_location: {downloader.ffmpeg_location}")
+        else:
+            self.write_log("Không tìm thấy ffmpeg runtime.")
+
     def bind_android_share(self):
         bind_shared_url_handler(self.receive_shared_url, logger=self.thread_log)
 
@@ -435,8 +450,7 @@ class AntiDownApp(App):
         try:
             self.url_input.text = url
             self.write_log(f"Đã nhận link từ Share: {url}")
-            self.set_status("Đã nhận link share", "Đang phân tích để chọn chất lượng tải.", COLORS["success"])
-            Clock.schedule_once(lambda *_: self.start_analyze(), 0.2)
+            self.set_status("Đã nhận link share", "Bấm Phân tích liên kết để chọn chất lượng tải.", COLORS["success"])
         except Exception:
             self.thread_log(traceback.format_exc())
 

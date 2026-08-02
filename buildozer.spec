@@ -22,7 +22,8 @@ android.ndk = 25b
 android.archs = arm64-v8a
 android.accept_sdk_license = True
 android.manifest.intent_filters = intent_filters.xml
-android.manifest.launch_mode = singleTop
+android.manifest.launch_mode = standard
+android.add_libs_arm64_v8a = bin/android/arm64-v8a/lib/*.so,bin/android/arm64-v8a/native/*.so
 
 log_level = 2
 warn_on_root = 0

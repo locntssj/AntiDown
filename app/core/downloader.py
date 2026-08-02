@@ -2,6 +2,7 @@ import os
 import platform as py_platform
 import shutil
 import stat
+import subprocess
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from pathlib import Path
 
@@ -43,6 +44,15 @@ PRESET_FORMATS = [
 TIKTOK_IMPERSONATE_TARGET = (
     ImpersonateTarget.from_str("safari:ios") if ImpersonateTarget else None
 )
+TIKTOK_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+        "Mobile/15E148 Safari/604.1"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.tiktok.com/",
+}
 TRACKING_PARAMS = {
     "fbclid",
     "gclid",
@@ -115,8 +125,71 @@ def _chmod_executable(path: Path) -> None:
         pass
 
 
-def ensure_ffmpeg_runtime() -> str | None:
+def _android_native_library_dir() -> Path | None:
+    if platform != "android":
+        return None
+    try:
+        from jnius import autoclass
+
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        native_dir = PythonActivity.mActivity.getApplicationInfo().nativeLibraryDir
+        return Path(str(native_dir)) if native_dir else None
+    except Exception:
+        return None
+
+
+def _replace_link_or_copy(link_path: Path, target_path: Path) -> None:
+    if link_path.exists() or link_path.is_symlink():
+        try:
+            if link_path.is_symlink() and Path(os.readlink(link_path)) == target_path:
+                return
+            link_path.unlink()
+        except OSError:
+            pass
+
+    try:
+        os.symlink(str(target_path), str(link_path))
+        return
+    except OSError:
+        pass
+
+    if not link_path.exists() or target_path.stat().st_size != link_path.stat().st_size:
+        shutil.copyfile(target_path, link_path)
+    _chmod_executable(link_path)
+
+
+def _probe_ffmpeg(runtime_dir: Path, logger) -> bool:
+    ffmpeg = runtime_dir / "ffmpeg"
+    if not ffmpeg.exists() and not ffmpeg.is_symlink():
+        logger(f"ffmpeg runtime file missing: {ffmpeg}")
+        return False
+
+    try:
+        result = subprocess.run(
+            [str(ffmpeg), "-version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except Exception as exc:
+        logger(f"ffmpeg probe failed: {exc}")
+        return False
+
+    if result.returncode != 0:
+        stderr = (result.stderr or result.stdout or "").strip()
+        logger(f"ffmpeg probe exit {result.returncode}: {stderr[:500]}")
+        return False
+
+    first_line = (result.stdout or "").splitlines()[0] if result.stdout else "ffmpeg OK"
+    logger(first_line)
+    return True
+
+
+def ensure_ffmpeg_runtime(logger=None) -> str | None:
     """Return a directory usable as yt-dlp's ffmpeg_location."""
+    logger = logger or (lambda message: None)
     if platform != "android":
         ffmpeg = shutil.which("ffmpeg")
         ffprobe = shutil.which("ffprobe")
@@ -127,23 +200,40 @@ def ensure_ffmpeg_runtime() -> str | None:
     app = App.get_running_app()
     abi = _current_android_abi()
     bundled_dir = _project_root() / "bin" / "android" / abi
+    native_dir = _android_native_library_dir()
     runtime_dir = Path(app.user_data_dir) / "bin" / abi
     runtime_lib_dir = runtime_dir / "lib"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     runtime_lib_dir.mkdir(parents=True, exist_ok=True)
 
     copied_any = False
-    for name in ("ffmpeg", "ffprobe"):
-        source = next(
-            (candidate for candidate in (bundled_dir / name, bundled_dir / f"{name}.bin") if candidate.exists()),
-            None,
-        )
+    binary_sources = {
+        "ffmpeg": [
+            native_dir / "libantidown_ffmpeg.so" if native_dir else None,
+            bundled_dir / "ffmpeg.bin",
+            bundled_dir / "ffmpeg",
+        ],
+        "ffprobe": [
+            native_dir / "libantidown_ffprobe.so" if native_dir else None,
+            bundled_dir / "ffprobe.bin",
+            bundled_dir / "ffprobe",
+        ],
+    }
+
+    logger(f"Android ABI: {abi}")
+    logger(f"Android native lib dir: {native_dir or 'not found'}")
+    logger(f"Bundled ffmpeg dir: {bundled_dir}")
+    logger(f"Runtime ffmpeg dir: {runtime_dir}")
+
+    for name, candidates in binary_sources.items():
+        source = next((candidate for candidate in candidates if candidate and candidate.exists()), None)
         target = runtime_dir / name
         if source:
-            if not target.exists() or source.stat().st_size != target.stat().st_size:
-                shutil.copyfile(source, target)
-            _chmod_executable(target)
+            _replace_link_or_copy(target, source)
             copied_any = True
+            logger(f"Prepared {name}: {target} -> {source}")
+        else:
+            logger(f"Missing bundled {name}. Checked: {', '.join(str(item) for item in candidates if item)}")
 
     source_lib_dir = bundled_dir / "lib"
     if source_lib_dir.exists():
@@ -153,11 +243,16 @@ def ensure_ffmpeg_runtime() -> str | None:
                 shutil.copyfile(source, target)
 
     current_ld_path = os.environ.get("LD_LIBRARY_PATH", "")
-    paths = [str(runtime_lib_dir)]
+    paths = []
+    if native_dir:
+        paths.append(str(native_dir))
+    paths.append(str(runtime_lib_dir))
     if current_ld_path:
         paths.append(current_ld_path)
     os.environ["LD_LIBRARY_PATH"] = ":".join(paths)
 
+    if copied_any and _probe_ffmpeg(runtime_dir, logger):
+        return str(runtime_dir)
     return str(runtime_dir) if copied_any else None
 
 
@@ -242,7 +337,7 @@ class VideoDownloader:
         self.progress = progress or (lambda percent, status: None)
         self.cookie_mode = cookie_mode or COOKIE_MODE_NONE
         self.cookie_value = (cookie_value or "").strip()
-        self.ffmpeg_location = ensure_ffmpeg_runtime()
+        self.ffmpeg_location = ensure_ffmpeg_runtime(self.logger)
         self.output_dir = get_download_dir(output_dir)
 
     def _is_tiktok_url(self, url: str) -> bool:
@@ -353,12 +448,17 @@ class VideoDownloader:
             opts["ffmpeg_location"] = self.ffmpeg_location
         self._apply_cookie_options(opts)
         if url and self._is_tiktok_url(url):
-            if TIKTOK_IMPERSONATE_TARGET:
+            if platform == "android":
+                opts["http_headers"] = TIKTOK_HEADERS
+            elif TIKTOK_IMPERSONATE_TARGET:
                 opts["impersonate"] = TIKTOK_IMPERSONATE_TARGET
             if tiktok_fallback:
                 opts["extractor_args"] = {
                     "tiktok": {
-                        "api_hostname": ["api19-normal-c-useast1a.tiktokv.com"],
+                        "api_hostname": [
+                            "api19-normal-c-useast1a.tiktokv.com",
+                            "api16-normal-c-useast1a.tiktokv.com",
+                        ],
                     }
                 }
         return opts
@@ -373,13 +473,15 @@ class VideoDownloader:
         except Exception as first_error:
             if not self._is_tiktok_url(url):
                 raise
-            self.logger("TikTok normal extraction failed. Retrying with alternate API host...")
+            self.logger(f"TikTok normal extraction failed: {first_error}")
+            self.logger("Retrying TikTok with alternate API host...")
             fallback_opts = self._base_options(url, tiktok_fallback=True)
             fallback_opts["skip_download"] = True
             try:
                 with yt_dlp.YoutubeDL(fallback_opts) as ydl:
                     return ydl.extract_info(url, download=False)
-            except Exception:
+            except Exception as fallback_error:
+                self.logger(f"TikTok fallback extraction failed: {fallback_error}")
                 raise first_error
 
     def list_formats(self, info: dict) -> list[dict]:
