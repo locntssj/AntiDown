@@ -9,6 +9,7 @@ This is for personal use with videos you have permission to download. It does no
 - `main.py` starts the Kivy app.
 - `app/main.py` contains the simple UI.
 - `app/core/downloader.py` wraps yt-dlp and prepares ffmpeg.
+- `app/core/android_intents.py` reads Android shared links.
 - `bin/android/<abi>/ffmpeg`, `ffprobe`, and `lib/*.so` are bundled binaries.
 - `buildozer.spec` is the Android build config.
 
@@ -49,6 +50,21 @@ On Android, the app tries to save to:
 
 If Android blocks public storage writes, it falls back to the app-private `downloads` folder.
 
+You can change the save folder in `Settings`. On Android 11+, grant `All files access` when the app opens the Android permission screen if you want to save directly into public storage.
+
+## Share links into AntiDown
+
+The Android build registers AntiDown for shared text links.
+
+Typical flow:
+
+1. Open YouTube, TikTok, Facebook, or another supported app/site.
+2. Tap `Share`.
+3. Choose `AntiDown`.
+4. AntiDown fills the URL and starts analyzing formats automatically.
+
+If AntiDown is already open, new shared links are handled through Android `onNewIntent`.
+
 ## Notes
 
 - High quality YouTube downloads often need `bestvideo+bestaudio`, which requires ffmpeg for merging.
@@ -67,6 +83,8 @@ Cookie options in the app:
 - `Auto cookies.txt`: reads `cookies.txt` from the download folder. On Android this is `/storage/emulated/0/Download/AntiDown/cookies.txt`.
 - `Custom cookies.txt`: enter a full path to a Netscape-format cookies file.
 - `Chrome desktop`, `Edge desktop`, `Firefox desktop`: reads cookies from a desktop browser profile when running the desktop preview. This is not available on Android due to app sandboxing.
+
+Cookie/login controls are grouped under `Settings`.
 
 ### Android WebView login
 

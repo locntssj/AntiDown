@@ -140,25 +140,40 @@ def ensure_ffmpeg_runtime() -> str | None:
     return str(runtime_dir) if copied_any else None
 
 
-def get_download_dir() -> Path:
-    if platform == "android":
-        public_dir = Path("/storage/emulated/0/Download/AntiDown")
-        try:
-            public_dir.mkdir(parents=True, exist_ok=True)
-            probe = public_dir / ".write_test"
-            probe.write_text("ok", encoding="utf-8")
-            probe.unlink(missing_ok=True)
-            return public_dir
-        except OSError:
-            pass
+def _writable_dir(path: Path) -> Path | None:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".write_test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return path
+    except OSError:
+        return None
 
+
+def get_private_download_dir() -> Path:
     app = App.get_running_app()
     private_dir = Path(app.user_data_dir) / "downloads" if app else _project_root() / "downloads"
     private_dir.mkdir(parents=True, exist_ok=True)
     return private_dir
 
 
-def request_android_permissions() -> None:
+def get_download_dir(preferred_dir: str | None = None) -> Path:
+    if preferred_dir:
+        selected = _writable_dir(Path(preferred_dir).expanduser())
+        if selected:
+            return selected
+
+    if platform == "android":
+        public_dir = _writable_dir(Path("/storage/emulated/0/Download/AntiDown"))
+        if public_dir:
+            return public_dir
+
+    return get_private_download_dir()
+
+
+def request_android_permissions(logger=None) -> None:
+    logger = logger or (lambda message: None)
     if platform != "android":
         return
     try:
@@ -171,20 +186,41 @@ def request_android_permissions() -> None:
             "android.permission.POST_NOTIFICATIONS",
             "android.permission.READ_MEDIA_VIDEO",
             "android.permission.READ_MEDIA_AUDIO",
+            "android.permission.MANAGE_EXTERNAL_STORAGE",
         ]
         request_permissions(permissions)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger(f"Could not request runtime permissions: {exc}")
+
+    try:
+        from jnius import autoclass
+
+        Environment = autoclass("android.os.Environment")
+        if Environment.isExternalStorageManager():
+            return
+
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        Intent = autoclass("android.content.Intent")
+        Settings = autoclass("android.provider.Settings")
+        Uri = autoclass("android.net.Uri")
+
+        activity = PythonActivity.mActivity
+        intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+        intent.setData(Uri.parse(f"package:{activity.getPackageName()}"))
+        activity.startActivity(intent)
+        logger("Opened Android storage permission settings.")
+    except Exception as exc:
+        logger(f"Could not open Android storage permission settings: {exc}")
 
 
 class VideoDownloader:
-    def __init__(self, logger=None, progress=None, cookie_mode=COOKIE_MODE_NONE, cookie_value=""):
+    def __init__(self, logger=None, progress=None, cookie_mode=COOKIE_MODE_NONE, cookie_value="", output_dir=""):
         self.logger = logger or (lambda message: None)
         self.progress = progress or (lambda percent, status: None)
         self.cookie_mode = cookie_mode or COOKIE_MODE_NONE
         self.cookie_value = (cookie_value or "").strip()
         self.ffmpeg_location = ensure_ffmpeg_runtime()
-        self.output_dir = get_download_dir()
+        self.output_dir = get_download_dir(output_dir)
 
     def _is_tiktok_url(self, url: str) -> bool:
         hostname = urlparse(url).hostname or ""

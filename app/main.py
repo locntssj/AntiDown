@@ -1,20 +1,35 @@
 import threading
 import traceback
+import json
+from pathlib import Path
 
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.graphics import Color, RoundedRectangle
 from kivy.metrics import dp, sp
 from kivy.properties import ListProperty
+from kivy.utils import platform
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
+from kivy.uix.filechooser import FileChooserListView
 from kivy.uix.label import Label
+from kivy.uix.popup import Popup
 from kivy.uix.progressbar import ProgressBar
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.spinner import Spinner
 from kivy.uix.textinput import TextInput
 
-from app.core.downloader import COOKIE_MODE_NONE, COOKIE_MODES, VideoDownloader, request_android_permissions
+from app.core.android_intents import bind_shared_url_handler, get_initial_shared_url
+from app.core.downloader import (
+    COOKIE_MODE_AUTO_FILE,
+    COOKIE_MODE_CUSTOM_FILE,
+    COOKIE_MODE_NONE,
+    COOKIE_MODES,
+    VideoDownloader,
+    get_download_dir,
+    get_private_download_dir,
+    request_android_permissions,
+)
 from app.core.webview_cookie import open_cookie_webview
 
 
@@ -88,6 +103,11 @@ class AntiDownApp(App):
         self.formats = []
         self.selected_format = "bestvideo+bestaudio/best"
         self.analyzed_url = ""
+        self.settings_data = self.load_user_settings()
+        self.cookie_mode = self.settings_data.get("cookie_mode") or COOKIE_MODE_NONE
+        self.cookie_value = self.settings_data.get("cookie_value") or ""
+        self.save_dir = self.settings_data.get("save_dir") or ""
+        self.settings_popup = None
 
         root = BoxLayout(orientation="vertical")
         with root.canvas.before:
@@ -108,12 +128,13 @@ class AntiDownApp(App):
 
         content.add_widget(self._build_link_panel())
         content.add_widget(self._build_video_panel())
-        content.add_widget(self._build_options_panel())
         content.add_widget(self._build_progress_panel())
         content.add_widget(self._build_log_panel())
 
         scroll.add_widget(content)
         root.add_widget(scroll)
+        self.bind_android_share()
+        Clock.schedule_once(lambda *_: self.apply_initial_shared_url(), 0.4)
         return root
 
     def _sync_page_background(self, instance, *_args):
@@ -153,8 +174,19 @@ class AntiDownApp(App):
             valign="middle",
         )
         title.bind(size=lambda instance, *_: setattr(instance, "text_size", instance.size))
+        settings_button = AppButton(
+            text="Settings",
+            fill_color=(0.80, 0.89, 1, 1),
+            text_color=COLORS["accent_dark"],
+            size_hint_x=None,
+            width=dp(94),
+        )
+        settings_button.height = dp(36)
+        settings_button.font_size = sp(13)
+        settings_button.bind(on_press=lambda *_: self.open_settings())
         title_row.add_widget(mark)
         title_row.add_widget(title)
+        title_row.add_widget(settings_button)
         header.add_widget(title_row)
 
         subtitle = Label(
@@ -187,6 +219,218 @@ class AntiDownApp(App):
             label.height = dp(height)
         label.bind(size=lambda instance, *_: setattr(instance, "text_size", instance.size))
         return label
+
+    def settings_path(self) -> Path:
+        return Path(self.user_data_dir) / "settings.json"
+
+    def load_user_settings(self) -> dict:
+        path = self.settings_path()
+        defaults = {
+            "cookie_mode": COOKIE_MODE_NONE,
+            "cookie_value": "",
+            "save_dir": "",
+        }
+        try:
+            if path.exists():
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                defaults.update({key: loaded.get(key, value) for key, value in defaults.items()})
+        except Exception:
+            pass
+        return defaults
+
+    def save_user_settings(self) -> None:
+        self.settings_data = {
+            "cookie_mode": self.cookie_mode,
+            "cookie_value": self.cookie_value,
+            "save_dir": self.save_dir,
+        }
+        path = self.settings_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.settings_data, indent=2), encoding="utf-8")
+
+    def current_save_dir(self) -> Path:
+        return get_download_dir(self.save_dir)
+
+    def update_save_dir_text(self):
+        if hasattr(self, "save_dir_label"):
+            self.save_dir_label.text = f"Lưu vào: {self.current_save_dir()}"
+
+    def cookie_hint(self, mode):
+        if mode == COOKIE_MODE_AUTO_FILE:
+            return "Dùng Download/AntiDown/cookies.txt"
+        if mode == COOKIE_MODE_CUSTOM_FILE:
+            return "Đường dẫn đầy đủ đến cookies.txt"
+        if mode.endswith("desktop"):
+            return "Tên profile trình duyệt (không bắt buộc)"
+        return "Không dùng cookie"
+
+    def open_settings(self):
+        content = BoxLayout(
+            orientation="vertical",
+            spacing=dp(10),
+            padding=[dp(14), dp(12), dp(14), dp(14)],
+        )
+
+        content.add_widget(self._label("Cookie / login", size=16, height=28, bold=True))
+        cookie_spinner = Spinner(
+            text=self.cookie_mode,
+            values=COOKIE_MODES,
+            size_hint_y=None,
+            height=dp(44),
+            background_normal="",
+            background_down="",
+            background_color=COLORS["accent_soft"],
+            color=COLORS["text"],
+            font_size=sp(14),
+        )
+        content.add_widget(cookie_spinner)
+
+        cookie_input = InputField(
+            text=self.cookie_value,
+            hint_text=self.cookie_hint(self.cookie_mode),
+            multiline=False,
+            size_hint_y=None,
+            height=dp(44),
+        )
+        cookie_spinner.bind(text=lambda _spinner, value: self.apply_cookie_hint(cookie_input, value))
+        content.add_widget(cookie_input)
+
+        login_button = AppButton(
+            text="Đăng nhập bằng WebView nội bộ",
+            fill_color=COLORS["accent_soft"],
+            text_color=COLORS["accent_dark"],
+        )
+        login_button.height = dp(42)
+        login_button.bind(on_press=lambda *_: self.start_login_webview(cookie_spinner, cookie_input))
+        content.add_widget(login_button)
+
+        content.add_widget(self._label("Thư mục lưu", size=16, height=28, bold=True))
+        save_dir_input = InputField(
+            text=self.save_dir,
+            hint_text=str(get_download_dir()),
+            multiline=False,
+            size_hint_y=None,
+            height=dp(44),
+        )
+        content.add_widget(save_dir_input)
+
+        folder_row = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(8))
+        default_button = AppButton(
+            text="Download",
+            fill_color=COLORS["surface"],
+            text_color=COLORS["accent_dark"],
+        )
+        default_button.height = dp(40)
+        default_button.bind(on_press=lambda *_: self.use_default_download_dir(save_dir_input))
+        choose_button = AppButton(
+            text="Chọn thư mục",
+            fill_color=COLORS["surface"],
+            text_color=COLORS["accent_dark"],
+        )
+        choose_button.height = dp(40)
+        choose_button.bind(on_press=lambda *_: self.open_folder_picker(save_dir_input))
+        folder_row.add_widget(default_button)
+        folder_row.add_widget(choose_button)
+        content.add_widget(folder_row)
+
+        permission_button = AppButton(
+            text="Cấp quyền Android",
+            fill_color=COLORS["accent_soft"],
+            text_color=COLORS["accent_dark"],
+        )
+        permission_button.height = dp(40)
+        permission_button.bind(on_press=lambda *_: request_android_permissions(self.thread_log))
+        content.add_widget(permission_button)
+
+        action_row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+        cancel_button = AppButton(
+            text="Đóng",
+            fill_color=COLORS["surface"],
+            text_color=COLORS["muted"],
+        )
+        save_button = AppButton(text="Lưu Settings", fill_color=COLORS["accent"])
+        action_row.add_widget(cancel_button)
+        action_row.add_widget(save_button)
+        content.add_widget(action_row)
+
+        popup = Popup(title="Settings", content=content, size_hint=(0.92, 0.86))
+        cancel_button.bind(on_press=lambda *_: popup.dismiss())
+        save_button.bind(
+            on_press=lambda *_: self.apply_settings_popup(
+                popup,
+                cookie_spinner.text,
+                cookie_input.text,
+                save_dir_input.text,
+            )
+        )
+        self.settings_popup = popup
+        popup.open()
+
+    def apply_cookie_hint(self, cookie_input, mode):
+        if mode in (COOKIE_MODE_NONE, COOKIE_MODE_AUTO_FILE):
+            cookie_input.text = ""
+        cookie_input.hint_text = self.cookie_hint(mode)
+
+    def use_default_download_dir(self, save_dir_input):
+        if platform == "android":
+            save_dir_input.text = "/storage/emulated/0/Download/AntiDown"
+        else:
+            save_dir_input.text = str(get_download_dir())
+
+    def open_folder_picker(self, save_dir_input):
+        start_path = save_dir_input.text.strip() or str(get_download_dir())
+        if not Path(start_path).exists():
+            start_path = str(get_private_download_dir())
+
+        chooser = FileChooserListView(path=start_path, dirselect=True)
+        content = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(10))
+        content.add_widget(chooser)
+
+        row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(8))
+        cancel_button = AppButton(text="Đóng", fill_color=COLORS["surface"], text_color=COLORS["muted"])
+        select_button = AppButton(text="Chọn", fill_color=COLORS["accent"])
+        row.add_widget(cancel_button)
+        row.add_widget(select_button)
+        content.add_widget(row)
+
+        popup = Popup(title="Chọn thư mục lưu", content=content, size_hint=(0.94, 0.88))
+
+        def choose_folder(*_args):
+            selected = chooser.selection[0] if chooser.selection else chooser.path
+            save_dir_input.text = selected
+            popup.dismiss()
+
+        cancel_button.bind(on_press=lambda *_: popup.dismiss())
+        select_button.bind(on_press=choose_folder)
+        popup.open()
+
+    def apply_settings_popup(self, popup, cookie_mode, cookie_value, save_dir):
+        self.cookie_mode = cookie_mode or COOKIE_MODE_NONE
+        self.cookie_value = (cookie_value or "").strip()
+        self.save_dir = (save_dir or "").strip()
+        self.save_user_settings()
+        self.update_save_dir_text()
+        self.write_log(f"Đã lưu Settings. Thư mục lưu: {self.current_save_dir()}")
+        popup.dismiss()
+
+    def bind_android_share(self):
+        bind_shared_url_handler(self.receive_shared_url, logger=self.thread_log)
+
+    def apply_initial_shared_url(self):
+        url = get_initial_shared_url(logger=self.thread_log)
+        if url:
+            self.receive_shared_url(url)
+
+    def receive_shared_url(self, url):
+        if not url:
+            return
+        Clock.schedule_once(lambda *_: self.apply_shared_url(url), 0)
+
+    def apply_shared_url(self, url):
+        self.url_input.text = url
+        self.write_log(f"Đã nhận link từ Share: {url}")
+        self.set_status("Đã nhận link share", "Đang phân tích để chọn chất lượng tải.", COLORS["success"])
+        Clock.schedule_once(lambda *_: self.start_analyze(), 0.2)
 
     def _build_link_panel(self):
         panel = Surface(
@@ -257,56 +501,13 @@ class AntiDownApp(App):
         panel.add_widget(self.download_button)
         return panel
 
-    def _build_options_panel(self):
-        panel = Surface(
-            orientation="vertical",
-            spacing=dp(8),
-            padding=dp(12),
-            size_hint_y=None,
-            height=dp(245),
-        )
-        panel.add_widget(self._label("Tùy chọn đăng nhập", size=16, height=25, bold=True))
-        panel.add_widget(self._label("Dùng khi video riêng tư hoặc cần phiên đăng nhập.", color=COLORS["muted"], size=13, height=22))
-
-        self.cookie_spinner = Spinner(
-            text=COOKIE_MODE_NONE,
-            values=COOKIE_MODES,
-            size_hint_y=None,
-            height=dp(44),
-            background_normal="",
-            background_down="",
-            background_color=COLORS["surface"],
-            color=COLORS["text"],
-            font_size=sp(14),
-        )
-        self.cookie_spinner.bind(text=self.on_cookie_mode_selected)
-        panel.add_widget(self.cookie_spinner)
-
-        self.cookie_input = InputField(
-            hint_text="Không dùng cookie",
-            multiline=False,
-            size_hint_y=None,
-            height=dp(44),
-        )
-        panel.add_widget(self.cookie_input)
-
-        self.login_button = AppButton(
-            text="Đăng nhập bằng WebView nội bộ",
-            fill_color=COLORS["accent_soft"],
-            text_color=COLORS["accent_dark"],
-        )
-        self.login_button.height = dp(42)
-        self.login_button.bind(on_press=lambda *_: self.start_login_webview())
-        panel.add_widget(self.login_button)
-        return panel
-
     def _build_progress_panel(self):
         panel = Surface(
             orientation="vertical",
             spacing=dp(8),
             padding=dp(12),
             size_hint_y=None,
-            height=dp(125),
+            height=dp(150),
         )
         row = BoxLayout(size_hint_y=None, height=dp(25))
         row.add_widget(self._label("Trạng thái", size=16, bold=True))
@@ -319,6 +520,9 @@ class AntiDownApp(App):
         panel.add_widget(self.progress)
         self.progress_detail = self._label("Video sẽ được lưu trong thư mục Download/AntiDown.", color=COLORS["muted"], size=13, height=32)
         panel.add_widget(self.progress_detail)
+        self.save_dir_label = self._label("", color=COLORS["muted"], size=12, height=24)
+        panel.add_widget(self.save_dir_label)
+        self.update_save_dir_text()
         return panel
 
     def _build_log_panel(self):
@@ -393,24 +597,13 @@ class AntiDownApp(App):
             parts.append(note)
         return " | ".join(parts) or "Định dạng do trang nguồn cung cấp."
 
-    def on_cookie_mode_selected(self, _spinner, value):
-        if value == "Auto cookies.txt":
-            self.cookie_input.text = ""
-            self.cookie_input.hint_text = "Dùng Download/AntiDown/cookies.txt"
-        elif value == "Custom cookies.txt":
-            self.cookie_input.hint_text = "Đường dẫn đầy đủ đến cookies.txt"
-        elif value.endswith("desktop"):
-            self.cookie_input.hint_text = "Tên profile trình duyệt (không bắt buộc)"
-        else:
-            self.cookie_input.text = ""
-            self.cookie_input.hint_text = "Không dùng cookie"
-
     def get_downloader(self):
         return VideoDownloader(
             logger=self.thread_log,
             progress=self.thread_progress,
-            cookie_mode=self.cookie_spinner.text,
-            cookie_value=self.cookie_input.text.strip(),
+            cookie_mode=self.cookie_mode,
+            cookie_value=self.cookie_value,
+            output_dir=self.save_dir,
         )
 
     def guess_login_url(self):
@@ -430,8 +623,15 @@ class AntiDownApp(App):
             return raw_url
         return "https://www.tiktok.com/login"
 
-    def start_login_webview(self):
-        self.cookie_spinner.text = "Auto cookies.txt"
+    def start_login_webview(self, cookie_spinner=None, cookie_input=None):
+        self.cookie_mode = COOKIE_MODE_AUTO_FILE
+        self.cookie_value = ""
+        if cookie_spinner is not None:
+            cookie_spinner.text = COOKIE_MODE_AUTO_FILE
+        if cookie_input is not None:
+            cookie_input.text = ""
+            cookie_input.hint_text = self.cookie_hint(COOKIE_MODE_AUTO_FILE)
+        self.save_user_settings()
         start_url = self.guess_login_url()
         self.set_status("Mở trang đăng nhập", "Đăng nhập rồi nhấn lưu cookie.", COLORS["warning"])
         self.write_log(f"Mở WebView đăng nhập: {start_url}")
@@ -533,7 +733,6 @@ class AntiDownApp(App):
     def set_busy(self, busy):
         self.analyze_button.disabled = busy
         self.download_button.disabled = busy or self.info is None
-        self.login_button.disabled = busy
 
     def thread_log(self, message):
         Clock.schedule_once(lambda *_: self.write_log(message), 0)
