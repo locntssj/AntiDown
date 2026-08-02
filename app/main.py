@@ -53,7 +53,7 @@ class Surface(BoxLayout):
         self._background.rgba = color
 
 
-class ActionButton(Button):
+class AppButton(Button):
     def __init__(self, *, fill_color, text_color=(1, 1, 1, 1), **kwargs):
         super().__init__(**kwargs)
         self.background_normal = ""
@@ -208,7 +208,7 @@ class AntiDownApp(App):
         self.url_input.bind(text=self.on_url_changed)
         panel.add_widget(self.url_input)
 
-        self.analyze_button = ActionButton(text="Phân tích liên kết", fill_color=COLORS["accent"])
+        self.analyze_button = AppButton(text="Phân tích liên kết", fill_color=COLORS["accent"])
         self.analyze_button.bind(on_press=lambda *_: self.start_analyze())
         panel.add_widget(self.analyze_button)
         return panel
@@ -251,7 +251,7 @@ class AntiDownApp(App):
         )
         panel.add_widget(self.format_note)
 
-        self.download_button = ActionButton(text="Tải xuống", fill_color=COLORS["accent"],)
+        self.download_button = AppButton(text="Tải xuống", fill_color=COLORS["accent"],)
         self.download_button.disabled = True
         self.download_button.bind(on_press=lambda *_: self.start_download())
         panel.add_widget(self.download_button)
@@ -290,7 +290,7 @@ class AntiDownApp(App):
         )
         panel.add_widget(self.cookie_input)
 
-        self.login_button = ActionButton(
+        self.login_button = AppButton(
             text="Đăng nhập bằng WebView nội bộ",
             fill_color=COLORS["accent_soft"],
             text_color=COLORS["accent_dark"],
@@ -331,7 +331,7 @@ class AntiDownApp(App):
         )
         heading = BoxLayout(size_hint_y=None, height=dp(25))
         heading.add_widget(self._label("Nhật ký hoạt động", size=16, bold=True))
-        clear_button = ActionButton(
+        clear_button = AppButton(
             text="Xóa",
             fill_color=COLORS["surface"],
             text_color=COLORS["accent_dark"],
