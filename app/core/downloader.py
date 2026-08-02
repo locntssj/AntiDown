@@ -2,9 +2,10 @@ import os
 import platform as py_platform
 import shutil
 import stat
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from pathlib import Path
 
+import requests
 import yt_dlp
 from kivy.app import App
 from kivy.utils import platform
@@ -42,6 +43,23 @@ PRESET_FORMATS = [
 TIKTOK_IMPERSONATE_TARGET = (
     ImpersonateTarget.from_str("safari:ios") if ImpersonateTarget else None
 )
+TRACKING_PARAMS = {
+    "fbclid",
+    "gclid",
+    "igshid",
+    "mc_cid",
+    "mc_eid",
+    "si",
+    "utm_campaign",
+    "utm_content",
+    "utm_medium",
+    "utm_source",
+    "utm_term",
+    "_r",
+    "_t",
+    "is_from_webapp",
+    "sender_device",
+}
 
 COOKIE_MODE_NONE = "No cookies"
 COOKIE_MODE_AUTO_FILE = "Auto cookies.txt"
@@ -116,9 +134,12 @@ def ensure_ffmpeg_runtime() -> str | None:
 
     copied_any = False
     for name in ("ffmpeg", "ffprobe"):
-        source = bundled_dir / name
+        source = next(
+            (candidate for candidate in (bundled_dir / name, bundled_dir / f"{name}.bin") if candidate.exists()),
+            None,
+        )
         target = runtime_dir / name
-        if source.exists():
+        if source:
             if not target.exists() or source.stat().st_size != target.stat().st_size:
                 shutil.copyfile(source, target)
             _chmod_executable(target)
@@ -226,6 +247,51 @@ class VideoDownloader:
         hostname = urlparse(url).hostname or ""
         return hostname.endswith("tiktok.com")
 
+    def _clean_url(self, url: str) -> str:
+        parsed = urlparse(url.strip())
+        if not parsed.scheme or not parsed.netloc:
+            return url.strip()
+        query = [
+            (key, value)
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if key.lower() not in TRACKING_PARAMS
+        ]
+        return urlunparse(parsed._replace(query=urlencode(query, doseq=True), fragment=""))
+
+    def _resolve_tiktok_short_url(self, url: str) -> str:
+        cleaned = self._clean_url(url)
+        parsed = urlparse(cleaned)
+        hostname = (parsed.hostname or "").lower()
+        if hostname not in {"vm.tiktok.com", "vt.tiktok.com"}:
+            return cleaned
+
+        try:
+            response = requests.get(
+                cleaned,
+                allow_redirects=True,
+                timeout=12,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+                        "Mobile/15E148 Safari/604.1"
+                    )
+                },
+            )
+            resolved = self._clean_url(response.url)
+            if resolved and resolved != cleaned:
+                self.logger(f"Resolved TikTok share URL: {resolved}")
+                return resolved
+        except Exception as exc:
+            self.logger(f"Could not resolve TikTok share URL, using original: {exc}")
+        return cleaned
+
+    def prepare_url(self, url: str) -> str:
+        cleaned = self._clean_url(url)
+        if self._is_tiktok_url(cleaned):
+            return self._resolve_tiktok_short_url(cleaned)
+        return cleaned
+
     def _default_cookie_file(self) -> Path:
         return self.output_dir / "cookies.txt"
 
@@ -296,6 +362,7 @@ class VideoDownloader:
         return opts
 
     def extract_info(self, url: str) -> dict:
+        url = self.prepare_url(url)
         opts = self._base_options(url)
         opts["skip_download"] = True
         try:
@@ -356,6 +423,7 @@ class VideoDownloader:
         return rows
 
     def download(self, url: str, format_id: str) -> None:
+        url = self.prepare_url(url)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         outtmpl = str(self.output_dir / "%(title).80B [%(id)s] [%(format_id)s].%(ext)s")
 

@@ -19,7 +19,7 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.spinner import Spinner
 from kivy.uix.textinput import TextInput
 
-from app.core.android_intents import bind_shared_url_handler, get_initial_shared_url
+from app.core.android_intents import bind_shared_url_handler, extract_first_url, get_initial_shared_url
 from app.core.downloader import (
     COOKIE_MODE_AUTO_FILE,
     COOKIE_MODE_CUSTOM_FILE,
@@ -638,11 +638,15 @@ class AntiDownApp(App):
         open_cookie_webview(start_url, logger=self.thread_log)
 
     def start_analyze(self):
-        url = self.url_input.text.strip()
+        raw_url = self.url_input.text.strip()
+        url = extract_first_url(raw_url) or raw_url
         if not url:
             self.write_log("Hãy dán liên kết video trước.")
             self.set_status("Thiếu liên kết", "Dán URL video rồi thử lại.", COLORS["danger"])
             return
+        if url != raw_url:
+            self.url_input.text = url
+            self.write_log(f"Đã lọc link chuẩn: {url}")
 
         self.set_busy(True)
         self.set_status("Đang phân tích", "Đang lấy tiêu đề và các định dạng có sẵn...", COLORS["warning"])
@@ -652,9 +656,10 @@ class AntiDownApp(App):
     def _analyze_worker(self, url):
         try:
             downloader = self.get_downloader()
-            info = downloader.extract_info(url)
+            prepared_url = downloader.prepare_url(url)
+            info = downloader.extract_info(prepared_url)
             formats = downloader.list_formats(info)
-            Clock.schedule_once(lambda *_: self.apply_info(url, info, formats), 0)
+            Clock.schedule_once(lambda *_: self.apply_info(prepared_url, info, formats), 0)
         except Exception:
             self.thread_log(traceback.format_exc())
             Clock.schedule_once(lambda *_: self.analysis_failed(), 0)
@@ -667,6 +672,8 @@ class AntiDownApp(App):
         self.info = info
         self.formats = [self._localize_format(item) for item in formats]
         self.analyzed_url = url
+        if self.url_input.text.strip() != url:
+            self.url_input.text = url
         title = info.get("title") or "Video chưa có tiêu đề"
         duration = info.get("duration")
         duration_text = self._format_duration(duration)

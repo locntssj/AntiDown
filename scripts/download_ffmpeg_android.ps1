@@ -42,6 +42,8 @@ foreach ($asset in $assets) {
 
     Copy-Item -LiteralPath $ffmpeg.FullName -Destination (Join-Path $targetDir "ffmpeg") -Force
     Copy-Item -LiteralPath $ffprobe.FullName -Destination (Join-Path $targetDir "ffprobe") -Force
+    Copy-Item -LiteralPath $ffmpeg.FullName -Destination (Join-Path $targetDir "ffmpeg.bin") -Force
+    Copy-Item -LiteralPath $ffprobe.FullName -Destination (Join-Path $targetDir "ffprobe.bin") -Force
 
     $libSource = Get-ChildItem -Path $extractDir -Recurse -Directory -Filter "lib" | Select-Object -First 1
     if ($libSource) {

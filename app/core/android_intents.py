@@ -1,17 +1,80 @@
 import re
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from kivy.utils import platform
 
 
-URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+URL_PATTERN = re.compile(r"https?://[^\s\"'<>\]\)]+", re.IGNORECASE)
 _INTENT_CALLBACKS = []
+TRACKING_PARAMS = {
+    "fbclid",
+    "gclid",
+    "igshid",
+    "mc_cid",
+    "mc_eid",
+    "si",
+    "utm_campaign",
+    "utm_content",
+    "utm_medium",
+    "utm_source",
+    "utm_term",
+    "_r",
+    "_t",
+    "is_from_webapp",
+    "sender_device",
+}
+
+
+def _clean_url(url: str) -> str:
+    cleaned = str(url or "").strip().strip("*_`")
+    cleaned = cleaned.rstrip(").,;]").strip().strip("*_`")
+    parsed = urlparse(cleaned)
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key.lower() not in TRACKING_PARAMS
+    ]
+    return urlunparse(parsed._replace(query=urlencode(query, doseq=True), fragment=""))
+
+
+def extract_urls(text: str | None) -> list[str]:
+    if not text:
+        return []
+
+    found = []
+    seen = set()
+    for match in URL_PATTERN.finditer(str(text)):
+        url = _clean_url(match.group(0))
+        if url and url not in seen:
+            found.append(url)
+            seen.add(url)
+    return found
+
+
+def _url_score(url: str) -> tuple[int, int]:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.lower()
+    score = 0
+    if "tiktok.com" in host:
+        score += 20
+    if "tiktoklite" in path:
+        score -= 30
+    if host in {"vm.tiktok.com", "vt.tiktok.com"}:
+        score += 10
+    if "/@/" in path or "/video/" in path or re.search(r"/@[^/]+/video/\d+", path):
+        score += 12
+    return score, -len(url)
 
 
 def extract_first_url(text: str | None) -> str:
-    if not text:
+    urls = extract_urls(text)
+    if not urls:
         return ""
-    match = URL_PATTERN.search(str(text))
-    return match.group(0).rstrip(").,;]") if match else ""
+    return max(urls, key=_url_score)
 
 
 def _intent_text(intent) -> str:

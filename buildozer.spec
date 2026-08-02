@@ -4,7 +4,7 @@ package.name = antidown
 package.domain = org.local
 
 source.dir = .
-source.include_exts = py,kv,png,jpg,jpeg,json,txt,md,ini,xml,so
+source.include_exts = py,kv,png,jpg,jpeg,json,txt,md,ini,xml,so,bin
 source.include_patterns = bin/android/arm64-v8a/*,bin/android/arm64-v8a/lib/*
 source.exclude_dirs = .git,__pycache__,.buildozer,.ffmpeg-downloads,downloads,dist
 

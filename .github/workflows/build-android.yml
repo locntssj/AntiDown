@@ -55,6 +55,8 @@ jobs:
         run: |
           chmod +x bin/android/arm64-v8a/ffmpeg
           chmod +x bin/android/arm64-v8a/ffprobe
+          chmod +x bin/android/arm64-v8a/ffmpeg.bin
+          chmod +x bin/android/arm64-v8a/ffprobe.bin
 
       - name: Build APK
         env:

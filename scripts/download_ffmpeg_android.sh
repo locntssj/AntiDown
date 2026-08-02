@@ -31,7 +31,9 @@ download_one() {
 
   cp "$ffmpeg" "$target_dir/ffmpeg"
   cp "$ffprobe" "$target_dir/ffprobe"
-  chmod +x "$target_dir/ffmpeg" "$target_dir/ffprobe"
+  cp "$ffmpeg" "$target_dir/ffmpeg.bin"
+  cp "$ffprobe" "$target_dir/ffprobe.bin"
+  chmod +x "$target_dir/ffmpeg" "$target_dir/ffprobe" "$target_dir/ffmpeg.bin" "$target_dir/ffprobe.bin"
 
   local lib_dir
   lib_dir="$(find "$extract_dir" -type d -name lib | head -n 1)"
