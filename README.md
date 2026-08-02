@@ -28,6 +28,20 @@ buildozer android debug
 
 The APK will be created under `bin/`.
 
+## Build APK with GitHub Actions
+
+This repo includes `.github/workflows/build-android.yml`.
+
+To build online:
+
+1. Open the GitHub repo.
+2. Go to `Actions`.
+3. Choose `Build Android APK`.
+4. Click `Run workflow`.
+5. Download `AntiDown-debug-apk` from the workflow artifacts when the run finishes.
+
+The workflow builds the default `arm64-v8a` debug APK and uploads the Buildozer log as `buildozer-log` if you need to debug a failed run.
+
 ## Build APK on Google Colab
 
 Use `colab_build_antidown.ipynb` to build on Google's Colab runtime instead of your local Windows machine.
