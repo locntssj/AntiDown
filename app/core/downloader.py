@@ -193,7 +193,7 @@ def get_download_dir(preferred_dir: str | None = None) -> Path:
     return get_private_download_dir()
 
 
-def request_android_permissions(logger=None) -> None:
+def request_android_permissions(logger=None, *, open_all_files_settings=False) -> None:
     logger = logger or (lambda message: None)
     if platform != "android":
         return
@@ -207,11 +207,13 @@ def request_android_permissions(logger=None) -> None:
             "android.permission.POST_NOTIFICATIONS",
             "android.permission.READ_MEDIA_VIDEO",
             "android.permission.READ_MEDIA_AUDIO",
-            "android.permission.MANAGE_EXTERNAL_STORAGE",
         ]
         request_permissions(permissions)
     except Exception as exc:
         logger(f"Could not request runtime permissions: {exc}")
+
+    if not open_all_files_settings:
+        return
 
     try:
         from jnius import autoclass

@@ -339,7 +339,12 @@ class AntiDownApp(App):
             text_color=COLORS["accent_dark"],
         )
         permission_button.height = dp(40)
-        permission_button.bind(on_press=lambda *_: request_android_permissions(self.thread_log))
+        permission_button.bind(
+            on_press=lambda *_: request_android_permissions(
+                self.thread_log,
+                open_all_files_settings=True,
+            )
+        )
         content.add_widget(permission_button)
 
         action_row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
@@ -427,10 +432,13 @@ class AntiDownApp(App):
         Clock.schedule_once(lambda *_: self.apply_shared_url(url), 0)
 
     def apply_shared_url(self, url):
-        self.url_input.text = url
-        self.write_log(f"Đã nhận link từ Share: {url}")
-        self.set_status("Đã nhận link share", "Đang phân tích để chọn chất lượng tải.", COLORS["success"])
-        Clock.schedule_once(lambda *_: self.start_analyze(), 0.2)
+        try:
+            self.url_input.text = url
+            self.write_log(f"Đã nhận link từ Share: {url}")
+            self.set_status("Đã nhận link share", "Đang phân tích để chọn chất lượng tải.", COLORS["success"])
+            Clock.schedule_once(lambda *_: self.start_analyze(), 0.2)
+        except Exception:
+            self.thread_log(traceback.format_exc())
 
     def _build_link_panel(self):
         panel = Surface(

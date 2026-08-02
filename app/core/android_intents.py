@@ -81,20 +81,24 @@ def _intent_text(intent) -> str:
     if platform != "android" or intent is None:
         return ""
 
-    from jnius import autoclass
-
-    Intent = autoclass("android.content.Intent")
-    action = intent.getAction()
-
-    if action == Intent.ACTION_SEND:
-        value = intent.getStringExtra(Intent.EXTRA_TEXT)
-        return str(value) if value else ""
-
-    if action == Intent.ACTION_VIEW:
-        value = intent.getDataString()
-        return str(value) if value else ""
-
     try:
+        from jnius import autoclass
+
+        Intent = autoclass("android.content.Intent")
+        action = intent.getAction()
+        parts = []
+
+        if action == Intent.ACTION_SEND:
+            for extra_name in (Intent.EXTRA_TEXT, Intent.EXTRA_SUBJECT):
+                value = intent.getStringExtra(extra_name)
+                if value:
+                    parts.append(str(value))
+            return "\n".join(parts)
+
+        if action == Intent.ACTION_VIEW:
+            value = intent.getDataString()
+            return str(value) if value else ""
+
         value = intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)
         return str(value) if value else ""
     except Exception:
@@ -126,9 +130,12 @@ def bind_shared_url_handler(callback, logger=None) -> bool:
         from android import activity
 
         def on_new_intent(intent):
-            url = extract_first_url(_intent_text(intent))
-            if url:
-                callback(url)
+            try:
+                url = extract_first_url(_intent_text(intent))
+                if url:
+                    callback(url)
+            except Exception as exc:
+                logger(f"Could not process Android share intent: {exc}")
 
         activity.bind(on_new_intent=on_new_intent)
         _INTENT_CALLBACKS.append(on_new_intent)
