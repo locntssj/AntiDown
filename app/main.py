@@ -47,6 +47,8 @@ COLORS = {
     "danger": (0.76, 0.20, 0.19, 1),
 }
 
+APP_BUILD = "0.1.1 d07db75+tiktok-web-fallback"
+
 
 class Surface(BoxLayout):
     """A restrained panel used to separate related controls."""
@@ -571,7 +573,7 @@ class AntiDownApp(App):
         panel.add_widget(heading)
 
         self.log = InputField(
-            text="Sẵn sàng. Dán liên kết video để bắt đầu.\n",
+            text=f"AntiDown build {APP_BUILD}\nSẵn sàng. Dán liên kết video để bắt đầu.\n",
             readonly=True,
             multiline=True,
             font_size=sp(12),
