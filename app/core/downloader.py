@@ -5,6 +5,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from pathlib import Path
 
@@ -197,10 +198,35 @@ def _probe_ffmpeg(runtime_dir: Path, logger) -> bool:
     return True
 
 
+def _desktop_ffmpeg_dirs() -> list[Path]:
+    roots = []
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        roots.append(Path(bundle_root))
+    if getattr(sys, "frozen", False):
+        roots.append(Path(sys.executable).resolve().parent)
+    roots.append(_project_root())
+
+    candidates = []
+    seen = set()
+    for root in roots:
+        for candidate in (root, root / "bin" / "windows", root / "ffmpeg"):
+            key = str(candidate).lower()
+            if key not in seen:
+                seen.add(key)
+                candidates.append(candidate)
+    return candidates
+
+
 def ensure_ffmpeg_runtime(logger=None) -> str | None:
     """Return a directory usable as yt-dlp's ffmpeg_location."""
     logger = logger or (lambda message: None)
     if platform != "android":
+        for candidate in _desktop_ffmpeg_dirs():
+            ffmpeg = candidate / "ffmpeg.exe"
+            ffprobe = candidate / "ffprobe.exe"
+            if ffmpeg.exists() and ffprobe.exists():
+                return str(candidate)
         ffmpeg = shutil.which("ffmpeg")
         ffprobe = shutil.which("ffprobe")
         if ffmpeg and ffprobe:
