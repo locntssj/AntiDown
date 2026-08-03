@@ -47,7 +47,7 @@ COLORS = {
     "danger": (0.76, 0.20, 0.19, 1),
 }
 
-APP_BUILD = "0.1.1 d07db75+tiktok-web-fallback"
+APP_BUILD = "0.1.2 tiktok-cookie-fallback"
 
 
 class Surface(BoxLayout):

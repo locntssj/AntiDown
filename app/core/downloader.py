@@ -55,6 +55,14 @@ TIKTOK_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://www.tiktok.com/",
 }
+TIKTOK_VIDEO_HEADERS = {
+    **TIKTOK_HEADERS,
+    "Accept": "*/*",
+    "Origin": "https://www.tiktok.com",
+    "Sec-Fetch-Dest": "video",
+    "Sec-Fetch-Mode": "no-cors",
+    "Sec-Fetch-Site": "cross-site",
+}
 TRACKING_PARAMS = {
     "fbclid",
     "gclid",
@@ -397,15 +405,53 @@ class VideoDownloader:
         except Exception:
             return value.replace(r"\u002F", "/").replace(r"\u0026", "&")
 
+    def _private_data_dir(self) -> Path:
+        app = App.get_running_app()
+        if app:
+            return Path(app.user_data_dir)
+        return _project_root() / ".ffmpeg-downloads"
+
+    def _write_tiktok_session_cookie_file(self, session: requests.Session) -> str | None:
+        cookies = list(session.cookies)
+        if not cookies:
+            return None
+
+        cookie_dir = self._private_data_dir() / "cookies"
+        cookie_dir.mkdir(parents=True, exist_ok=True)
+        cookie_file = cookie_dir / "tiktok-session.cookies.txt"
+        lines = ["# Netscape HTTP Cookie File\n"]
+        for cookie in cookies:
+            if not cookie.name or cookie.value is None:
+                continue
+            domain = cookie.domain or ".tiktok.com"
+            if domain.endswith("tiktok.com"):
+                domain = ".tiktok.com"
+            include_subdomains = "TRUE" if domain.startswith(".") else "FALSE"
+            path = cookie.path or "/"
+            secure = "TRUE" if cookie.secure else "FALSE"
+            expires = str(cookie.expires or 0)
+            value = str(cookie.value).replace("\t", "%09").replace("\r", "").replace("\n", "")
+            lines.append("\t".join([domain, include_subdomains, path, secure, expires, cookie.name, value]) + "\n")
+
+        if len(lines) == 1:
+            return None
+        cookie_file.write_text("".join(lines), encoding="utf-8")
+        return str(cookie_file)
+
     def _extract_tiktok_web_direct(self, url: str) -> dict:
         parsed = urlparse(url)
         match = re.search(r"/video/(\d+)", parsed.path)
         video_id = match.group(1) if match else parsed.path.rstrip("/").rsplit("/", 1)[-1]
         self.logger("Trying TikTok direct webpage fallback...")
 
-        response = requests.get(url, headers=TIKTOK_HEADERS, timeout=20)
+        session = requests.Session()
+        response = session.get(url, headers=TIKTOK_HEADERS, timeout=20)
         response.raise_for_status()
         webpage = response.text
+        video_headers = {**TIKTOK_VIDEO_HEADERS, "Referer": url}
+        cookie_file = self._write_tiktok_session_cookie_file(session)
+        if cookie_file:
+            self.logger("TikTok session cookies prepared for direct download.")
 
         formats = []
         seen = set()
@@ -423,7 +469,7 @@ class VideoDownloader:
                         "vcodec": "h264",
                         "acodec": "aac",
                         "protocol": "https",
-                        "http_headers": TIKTOK_HEADERS,
+                        "http_headers": dict(video_headers),
                     }
                 )
 
@@ -447,6 +493,8 @@ class VideoDownloader:
             "webpage_url": url,
             "thumbnail": thumbnail or None,
             "formats": formats,
+            "http_headers": dict(video_headers),
+            "_antidown_cookiefile": cookie_file,
             "_antidown_direct": True,
         }
 
@@ -598,6 +646,9 @@ class VideoDownloader:
 
         info = self.extract_info(url)
         opts = self._base_options(url, tiktok_fallback=self._is_tiktok_url(url))
+        if info.get("_antidown_cookiefile"):
+            opts["cookiefile"] = info["_antidown_cookiefile"]
+            self.logger("Using TikTok session cookies for direct download.")
         opts.update(
             {
                 "format": format_id,
