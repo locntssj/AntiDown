@@ -1,5 +1,7 @@
 import os
 import platform as py_platform
+import json
+import re
 import shutil
 import stat
 import subprocess
@@ -389,6 +391,65 @@ class VideoDownloader:
             return self._resolve_tiktok_short_url(cleaned)
         return cleaned
 
+    def _decode_js_string(self, value: str) -> str:
+        try:
+            return json.loads(f'"{value}"')
+        except Exception:
+            return value.replace(r"\u002F", "/").replace(r"\u0026", "&")
+
+    def _extract_tiktok_web_direct(self, url: str) -> dict:
+        parsed = urlparse(url)
+        match = re.search(r"/video/(\d+)", parsed.path)
+        video_id = match.group(1) if match else parsed.path.rstrip("/").rsplit("/", 1)[-1]
+        self.logger("Trying TikTok direct webpage fallback...")
+
+        response = requests.get(url, headers=TIKTOK_HEADERS, timeout=20)
+        response.raise_for_status()
+        webpage = response.text
+
+        formats = []
+        seen = set()
+        for field, quality in (("playAddr", "web-play"), ("downloadAddr", "web-download")):
+            for raw_url in re.findall(rf'"{field}"\s*:\s*"([^"]+)"', webpage):
+                video_url = self._decode_js_string(raw_url)
+                if not video_url or video_url in seen:
+                    continue
+                seen.add(video_url)
+                formats.append(
+                    {
+                        "format_id": quality if len(formats) == 0 else f"{quality}-{len(formats) + 1}",
+                        "url": video_url,
+                        "ext": "mp4",
+                        "vcodec": "h264",
+                        "acodec": "aac",
+                        "protocol": "https",
+                        "http_headers": TIKTOK_HEADERS,
+                    }
+                )
+
+        if not formats:
+            raise ExtractorError("TikTok direct webpage fallback found no playable URLs", video_id=video_id)
+
+        def first_json_string(key: str) -> str:
+            match = re.search(rf'"{key}"\s*:\s*"([^"]*)"', webpage)
+            return self._decode_js_string(match.group(1)) if match else ""
+
+        title = first_json_string("desc") or first_json_string("shareTitle") or f"TikTok video {video_id}"
+        thumbnail = first_json_string("cover") or first_json_string("originCover") or first_json_string("dynamicCover")
+        uploader = first_json_string("uniqueId") or first_json_string("nickname")
+
+        self.logger(f"TikTok direct fallback found {len(formats)} playable URL(s).")
+        return {
+            "id": video_id,
+            "title": title,
+            "description": title,
+            "uploader": uploader,
+            "webpage_url": url,
+            "thumbnail": thumbnail or None,
+            "formats": formats,
+            "_antidown_direct": True,
+        }
+
     def _default_cookie_file(self) -> Path:
         return self.output_dir / "cookies.txt"
 
@@ -482,10 +543,14 @@ class VideoDownloader:
                     return ydl.extract_info(url, download=False)
             except Exception as fallback_error:
                 self.logger(f"TikTok fallback extraction failed: {fallback_error}")
-                raise first_error
+                try:
+                    return self._extract_tiktok_web_direct(url)
+                except Exception as direct_error:
+                    self.logger(f"TikTok direct fallback failed: {direct_error}")
+                    raise first_error
 
     def list_formats(self, info: dict) -> list[dict]:
-        rows = list(PRESET_FORMATS)
+        rows = [] if info.get("_antidown_direct") else list(PRESET_FORMATS)
         seen = {row["format_id"] for row in rows}
 
         for item in info.get("formats") or []:
