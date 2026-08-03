@@ -1,3 +1,5 @@
+import traceback
+import webbrowser
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -67,22 +69,30 @@ def _cookies_to_netscape(cookie_rows: list[tuple[str, str]]) -> str:
 def open_cookie_webview(start_url: str, logger=None, cookie_urls=None) -> bool:
     logger = logger or (lambda message: None)
     if platform != "android":
-        logger("WebView cookie login only runs on Android builds.")
-        return False
+        webbrowser.open(start_url)
+        logger(f"Opened browser login: {start_url}")
+        return True
 
     cookie_urls = tuple(dict.fromkeys((start_url, *(cookie_urls or COMMON_COOKIE_URLS))))
     output_path = default_cookie_file()
 
-    from android.runnable import run_on_ui_thread
-    from jnius import PythonJavaClass, autoclass, java_method
+    try:
+        from android.runnable import run_on_ui_thread
+        from jnius import PythonJavaClass, autoclass, java_method
 
-    PythonActivity = autoclass("org.kivy.android.PythonActivity")
-    LinearLayout = autoclass("android.widget.LinearLayout")
-    LayoutParams = autoclass("android.widget.LinearLayout$LayoutParams")
-    Button = autoclass("android.widget.Button")
-    WebView = autoclass("android.webkit.WebView")
-    WebViewClient = autoclass("android.webkit.WebViewClient")
-    CookieManager = autoclass("android.webkit.CookieManager")
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        LinearLayout = autoclass("android.widget.LinearLayout")
+        LinearLayoutParams = autoclass("android.widget.LinearLayout$LayoutParams")
+        ViewGroupLayoutParams = autoclass("android.view.ViewGroup$LayoutParams")
+        Button = autoclass("android.widget.Button")
+        WebView = autoclass("android.webkit.WebView")
+        WebViewClient = autoclass("android.webkit.WebViewClient")
+        CookieManager = autoclass("android.webkit.CookieManager")
+        Color = autoclass("android.graphics.Color")
+    except Exception as exc:
+        logger(f"Could not prepare Android WebView login: {exc}")
+        logger(traceback.format_exc())
+        return False
 
     class ClickListener(PythonJavaClass):
         __javainterfaces__ = ["android/view/View$OnClickListener"]
@@ -98,59 +108,77 @@ def open_cookie_webview(start_url: str, logger=None, cookie_urls=None) -> bool:
 
     @run_on_ui_thread
     def show_webview():
-        activity = PythonActivity.mActivity
-        cookie_manager = CookieManager.getInstance()
-        cookie_manager.setAcceptCookie(True)
-
-        layout = LinearLayout(activity)
-        layout.setOrientation(LinearLayout.VERTICAL)
-
-        toolbar = LinearLayout(activity)
-        toolbar.setOrientation(LinearLayout.HORIZONTAL)
-
-        save_button = Button(activity)
-        save_button.setText("Save Cookies & Close")
-        close_button = Button(activity)
-        close_button.setText("Close")
-
-        webview = WebView(activity)
-        settings = webview.getSettings()
-        settings.setJavaScriptEnabled(True)
-        settings.setDomStorageEnabled(True)
-        webview.setWebViewClient(WebViewClient())
         try:
-            cookie_manager.setAcceptThirdPartyCookies(webview, True)
-        except Exception:
-            pass
+            activity = PythonActivity.mActivity
+            cookie_manager = CookieManager.getInstance()
+            cookie_manager.setAcceptCookie(True)
 
-        def close():
-            activity.setContentView(activity.mView)
+            layout = LinearLayout(activity)
+            layout.setOrientation(LinearLayout.VERTICAL)
+            layout.setBackgroundColor(Color.WHITE)
 
-        def save_and_close():
-            cookie_manager.flush()
-            rows = []
-            for url in cookie_urls:
-                cookie_header = cookie_manager.getCookie(url)
-                if cookie_header:
-                    rows.append((url, cookie_header))
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(_cookies_to_netscape(rows), encoding="utf-8")
-            logger(f"Saved cookies to: {output_path}")
-            close()
+            toolbar = LinearLayout(activity)
+            toolbar.setOrientation(LinearLayout.HORIZONTAL)
 
-        save_listener = ClickListener(save_and_close)
-        close_listener = ClickListener(close)
-        _ANDROID_REFS[:] = [layout, toolbar, save_button, close_button, webview, save_listener, close_listener]
+            save_button = Button(activity)
+            save_button.setText("Save Cookies & Close")
+            close_button = Button(activity)
+            close_button.setText("Close")
 
-        save_button.setOnClickListener(save_listener)
-        close_button.setOnClickListener(close_listener)
+            webview = WebView(activity)
+            settings = webview.getSettings()
+            settings.setJavaScriptEnabled(True)
+            settings.setDomStorageEnabled(True)
+            settings.setDatabaseEnabled(True)
+            settings.setLoadWithOverviewMode(True)
+            settings.setUseWideViewPort(True)
+            webview.setWebViewClient(WebViewClient())
+            try:
+                cookie_manager.setAcceptThirdPartyCookies(webview, True)
+            except Exception:
+                pass
 
-        toolbar.addView(save_button, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0))
-        toolbar.addView(close_button, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1.0))
-        layout.addView(toolbar, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
-        layout.addView(webview, LayoutParams(LayoutParams.MATCH_PARENT, 0, 1.0))
-        activity.setContentView(layout)
-        webview.loadUrl(start_url)
+            def close():
+                try:
+                    webview.stopLoading()
+                    parent = layout.getParent()
+                    if parent:
+                        parent.removeView(layout)
+                    webview.destroy()
+                finally:
+                    _ANDROID_REFS.clear()
+
+            def save_and_close():
+                cookie_manager.flush()
+                rows = []
+                for url in cookie_urls:
+                    cookie_header = cookie_manager.getCookie(url)
+                    if cookie_header:
+                        rows.append((url, cookie_header))
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(_cookies_to_netscape(rows), encoding="utf-8")
+                logger(f"Saved cookies to: {output_path}")
+                close()
+
+            save_listener = ClickListener(save_and_close)
+            close_listener = ClickListener(close)
+            _ANDROID_REFS[:] = [layout, toolbar, save_button, close_button, webview, save_listener, close_listener]
+
+            save_button.setOnClickListener(save_listener)
+            close_button.setOnClickListener(close_listener)
+
+            toolbar.addView(save_button, LinearLayoutParams(0, LinearLayoutParams.WRAP_CONTENT, 1.0))
+            toolbar.addView(close_button, LinearLayoutParams(0, LinearLayoutParams.WRAP_CONTENT, 1.0))
+            layout.addView(toolbar, LinearLayoutParams(LinearLayoutParams.MATCH_PARENT, LinearLayoutParams.WRAP_CONTENT))
+            layout.addView(webview, LinearLayoutParams(LinearLayoutParams.MATCH_PARENT, 0, 1.0))
+            activity.addContentView(
+                layout,
+                ViewGroupLayoutParams(ViewGroupLayoutParams.MATCH_PARENT, ViewGroupLayoutParams.MATCH_PARENT),
+            )
+            webview.loadUrl(start_url)
+        except Exception as exc:
+            logger(f"Could not open Android WebView login: {exc}")
+            logger(traceback.format_exc())
 
     show_webview()
     logger(f"Opened WebView login: {start_url}")

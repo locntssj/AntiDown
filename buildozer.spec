@@ -8,7 +8,7 @@ source.include_exts = py,kv,png,jpg,jpeg,json,txt,md,ini,xml,so,bin
 source.include_patterns = bin/android/arm64-v8a/*,bin/android/arm64-v8a/lib/*
 source.exclude_dirs = .git,__pycache__,.buildozer,.ffmpeg-downloads,downloads,dist
 
-version = 0.1.2
+version = 0.1.3
 
 requirements = python3,kivy,pyjnius,yt-dlp,certifi,requests,urllib3,websockets,mutagen,pycryptodomex,brotli,cffi,curl-cffi,yt-dlp-ejs
 

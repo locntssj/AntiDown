@@ -47,7 +47,7 @@ COLORS = {
     "danger": (0.76, 0.20, 0.19, 1),
 }
 
-APP_BUILD = "0.1.2 tiktok-cookie-fallback"
+APP_BUILD = "0.1.3 webview-login-overlay"
 
 
 class Surface(BoxLayout):
@@ -659,6 +659,8 @@ class AntiDownApp(App):
         start_url = self.guess_login_url()
         self.set_status("Mở trang đăng nhập", "Đăng nhập rồi nhấn lưu cookie.", COLORS["warning"])
         self.write_log(f"Mở WebView đăng nhập: {start_url}")
+        if self.settings_popup is not None:
+            self.settings_popup.dismiss()
         open_cookie_webview(start_url, logger=self.thread_log)
 
     def start_analyze(self):
