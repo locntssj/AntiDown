@@ -47,7 +47,21 @@ COLORS = {
     "danger": (0.76, 0.20, 0.19, 1),
 }
 
-APP_BUILD = "0.1.3 webview-login-overlay"
+APP_BUILD = "0.1.5 douyin-cookie-audio-fix"
+NETSCAPE_COOKIE_HEADER = (
+    "# Netscape HTTP Cookie File\n"
+    "# https://curl.haxx.se/rfc/cookie_spec.html\n"
+    "# This is a generated file! Do not edit.\n\n"
+)
+COOKIE_SITE_OPTIONS = ("TikTok", "YouTube", "Facebook", "Bilibili", "Douyin")
+COOKIE_SITE_IDS = {
+    "TikTok": "tiktok",
+    "YouTube": "youtube",
+    "Facebook": "facebook",
+    "Bilibili": "bilibili",
+    "Douyin": "douyin",
+}
+COOKIE_SITE_LABELS = {value: key for key, value in COOKIE_SITE_IDS.items()}
 
 
 class Surface(BoxLayout):
@@ -107,6 +121,7 @@ class AntiDownApp(App):
         self.settings_data = self.load_user_settings()
         self.cookie_mode = self.settings_data.get("cookie_mode") or COOKIE_MODE_NONE
         self.cookie_value = self.settings_data.get("cookie_value") or ""
+        self.cookie_site = self.settings_data.get("cookie_site") or "tiktok"
         self.save_dir = self.settings_data.get("save_dir") or ""
         self.settings_popup = None
 
@@ -228,6 +243,7 @@ class AntiDownApp(App):
         defaults = {
             "cookie_mode": COOKIE_MODE_NONE,
             "cookie_value": "",
+            "cookie_site": "tiktok",
             "save_dir": "",
         }
         try:
@@ -242,6 +258,7 @@ class AntiDownApp(App):
         self.settings_data = {
             "cookie_mode": self.cookie_mode,
             "cookie_value": self.cookie_value,
+            "cookie_site": self.cookie_site,
             "save_dir": self.save_dir,
         }
         path = self.settings_path()
@@ -251,13 +268,59 @@ class AntiDownApp(App):
     def current_save_dir(self) -> Path:
         return get_download_dir(self.save_dir)
 
+    def cookie_site_id(self, value: str | None = None) -> str:
+        value = value or self.cookie_site
+        return COOKIE_SITE_IDS.get(value, value if value in COOKIE_SITE_LABELS else "tiktok")
+
+    def cookie_site_label(self, value: str | None = None) -> str:
+        return COOKIE_SITE_LABELS.get(self.cookie_site_id(value), "TikTok")
+
+    def cookie_file_path(self, save_dir: str | None = None, cookie_site: str | None = None) -> Path:
+        site_id = self.cookie_site_id(cookie_site)
+        return get_download_dir(save_dir if save_dir is not None else self.save_dir) / "cookies" / f"{site_id}.cookies.txt"
+
+    def legacy_cookie_file_path(self, save_dir: str | None = None) -> Path:
+        return get_download_dir(save_dir if save_dir is not None else self.save_dir) / "cookies.txt"
+
+    def load_auto_cookie_text(self, cookie_site: str | None = None) -> str:
+        path = self.cookie_file_path(cookie_site=cookie_site)
+        if not path.exists():
+            path = self.legacy_cookie_file_path()
+        try:
+            return path.read_text(encoding="utf-8") if path.exists() else ""
+        except Exception:
+            return ""
+
+    def normalize_cookie_text(self, cookie_text: str) -> str:
+        text = (cookie_text or "").strip()
+        if not text:
+            return ""
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        lines = [line.rstrip() for line in text.split("\n")]
+        has_header = any(line.startswith("# Netscape HTTP Cookie File") for line in lines[:5])
+        normalized = "\n".join(lines).rstrip() + "\n"
+        return normalized if has_header else NETSCAPE_COOKIE_HEADER + normalized
+
+    def save_pasted_cookie_file(self, cookie_text: str, save_dir: str, cookie_site: str) -> Path | None:
+        normalized = self.normalize_cookie_text(cookie_text)
+        path = self.cookie_file_path(save_dir, cookie_site)
+        if not normalized:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(normalized, encoding="utf-8")
+        return path
+
     def update_save_dir_text(self):
         if hasattr(self, "save_dir_label"):
             self.save_dir_label.text = f"Lưu vào: {self.current_save_dir()}"
 
     def cookie_hint(self, mode):
         if mode == COOKIE_MODE_AUTO_FILE:
-            return "Dùng Download/AntiDown/cookies.txt"
+            return "Dán nội dung cookies.txt Netscape"
         if mode == COOKIE_MODE_CUSTOM_FILE:
             return "Đường dẫn đầy đủ đến cookies.txt"
         if mode.endswith("desktop"):
@@ -285,14 +348,29 @@ class AntiDownApp(App):
         )
         content.add_widget(cookie_spinner)
 
-        cookie_input = InputField(
-            text=self.cookie_value,
-            hint_text=self.cookie_hint(self.cookie_mode),
-            multiline=False,
+        cookie_site_spinner = Spinner(
+            text=self.cookie_site_label(),
+            values=COOKIE_SITE_OPTIONS,
             size_hint_y=None,
-            height=dp(44),
+            height=dp(42),
+            background_normal="",
+            background_down="",
+            background_color=COLORS["surface"],
+            color=COLORS["text"],
+            font_size=sp(14),
+        )
+        content.add_widget(cookie_site_spinner)
+
+        cookie_text = self.load_auto_cookie_text(self.cookie_site) if self.cookie_mode == COOKIE_MODE_AUTO_FILE else self.cookie_value
+        cookie_input = InputField(
+            text=cookie_text,
+            hint_text=self.cookie_hint(self.cookie_mode),
+            multiline=self.cookie_mode == COOKIE_MODE_AUTO_FILE,
+            size_hint_y=None,
+            height=dp(150 if self.cookie_mode == COOKIE_MODE_AUTO_FILE else 44),
         )
         cookie_spinner.bind(text=lambda _spinner, value: self.apply_cookie_hint(cookie_input, value))
+        cookie_site_spinner.bind(text=lambda _spinner, value: self.apply_cookie_site(cookie_input, value, cookie_spinner.text))
         content.add_widget(cookie_input)
 
         login_button = AppButton(
@@ -373,6 +451,7 @@ class AntiDownApp(App):
             on_press=lambda *_: self.apply_settings_popup(
                 popup,
                 cookie_spinner.text,
+                cookie_site_spinner.text,
                 cookie_input.text,
                 save_dir_input.text,
             )
@@ -381,9 +460,23 @@ class AntiDownApp(App):
         popup.open()
 
     def apply_cookie_hint(self, cookie_input, mode):
-        if mode in (COOKIE_MODE_NONE, COOKIE_MODE_AUTO_FILE):
+        if mode == COOKIE_MODE_AUTO_FILE:
+            cookie_input.text = self.load_auto_cookie_text()
+            cookie_input.multiline = True
+            cookie_input.height = dp(150)
+        elif mode == COOKIE_MODE_NONE:
             cookie_input.text = ""
+            cookie_input.multiline = False
+            cookie_input.height = dp(44)
+        else:
+            cookie_input.multiline = False
+            cookie_input.height = dp(44)
         cookie_input.hint_text = self.cookie_hint(mode)
+
+    def apply_cookie_site(self, cookie_input, cookie_site, cookie_mode):
+        self.cookie_site = self.cookie_site_id(cookie_site)
+        if cookie_mode == COOKIE_MODE_AUTO_FILE:
+            cookie_input.text = self.load_auto_cookie_text(self.cookie_site)
 
     def use_default_download_dir(self, save_dir_input):
         if platform == "android":
@@ -418,13 +511,21 @@ class AntiDownApp(App):
         select_button.bind(on_press=choose_folder)
         popup.open()
 
-    def apply_settings_popup(self, popup, cookie_mode, cookie_value, save_dir):
+    def apply_settings_popup(self, popup, cookie_mode, cookie_site, cookie_value, save_dir):
         self.cookie_mode = cookie_mode or COOKIE_MODE_NONE
-        self.cookie_value = (cookie_value or "").strip()
+        self.cookie_site = self.cookie_site_id(cookie_site)
         self.save_dir = (save_dir or "").strip()
+        saved_cookie_path = None
+        if self.cookie_mode == COOKIE_MODE_AUTO_FILE:
+            saved_cookie_path = self.save_pasted_cookie_file(cookie_value, self.save_dir, self.cookie_site)
+            self.cookie_value = ""
+        else:
+            self.cookie_value = (cookie_value or "").strip()
         self.save_user_settings()
         self.update_save_dir_text()
         self.write_log(f"Đã lưu Settings. Thư mục lưu: {self.current_save_dir()}")
+        if saved_cookie_path:
+            self.write_log(f"Đã lưu cookie {self.cookie_site_label()}: {saved_cookie_path}")
         popup.dismiss()
 
     def check_ffmpeg_runtime(self):
@@ -599,7 +700,7 @@ class AntiDownApp(App):
         preset_map = {
             "Chất lượng tốt nhất (video + âm thanh)": "bestvideo+bestaudio/best",
             "MP4 tốt nhất nếu có": "best[ext=mp4]/best",
-            "Chỉ tải âm thanh": "bestaudio/best",
+            "Chỉ tải âm thanh MP3": "bestaudio/best",
         }
         self.selected_format = preset_map.get(value, value)
 
@@ -607,7 +708,7 @@ class AntiDownApp(App):
         preset_notes = {
             "bestvideo+bestaudio/best": "Video và âm thanh tốt nhất. Có thể cần ghép bằng ffmpeg.",
             "best[ext=mp4]/best": "Ưu tiên MP4 để tương thích tốt hơn.",
-            "bestaudio/best": "Chỉ tải âm thanh chất lượng tốt nhất.",
+            "bestaudio/best": "Chỉ tải âm thanh và chuyển ra MP3 bằng ffmpeg.",
         }
         if item.get("format_id") in preset_notes:
             return preset_notes[item["format_id"]]
@@ -635,6 +736,8 @@ class AntiDownApp(App):
         lowered = raw_url.lower()
         if "tiktok.com" in lowered:
             return "https://www.tiktok.com/login"
+        if "douyin.com" in lowered:
+            return "https://www.douyin.com/"
         if "youtube.com" in lowered or "youtu.be" in lowered or "google.com" in lowered:
             return "https://accounts.google.com/ServiceLogin?service=youtube"
         if "facebook.com" in lowered or "fb.watch" in lowered:
@@ -722,7 +825,7 @@ class AntiDownApp(App):
         preset_labels = {
             "bestvideo+bestaudio/best": "Chất lượng tốt nhất (video + âm thanh)",
             "best[ext=mp4]/best": "MP4 tốt nhất nếu có",
-            "bestaudio/best": "Chỉ tải âm thanh",
+            "bestaudio/best": "Chỉ tải âm thanh MP3",
         }
         translated["label"] = preset_labels.get(item.get("format_id"), item.get("label", "Định dạng không rõ"))
         return translated

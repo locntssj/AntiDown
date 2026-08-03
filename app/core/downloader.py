@@ -36,11 +36,11 @@ PRESET_FORMATS = [
         "note": "Good compatibility",
     },
     {
-        "label": "Best audio",
+        "label": "Best audio MP3",
         "format_id": "bestaudio/best",
-        "ext": "audio",
+        "ext": "mp3",
         "height": "",
-        "note": "Audio only",
+        "note": "Extract audio with ffmpeg",
     },
 ]
 
@@ -97,6 +97,13 @@ COOKIE_MODES = (
     COOKIE_MODE_EDGE,
     COOKIE_MODE_FIREFOX,
 )
+COOKIE_SITE_HOSTS = {
+    "tiktok": ("tiktok.com",),
+    "youtube": ("youtube.com", "youtu.be", "youtube-nocookie.com"),
+    "facebook": ("facebook.com", "fb.watch", "fb.com"),
+    "bilibili": ("bilibili.com", "b23.tv"),
+    "douyin": ("douyin.com",),
+}
 
 
 class YtDlpLogBridge:
@@ -380,6 +387,10 @@ class VideoDownloader:
         hostname = urlparse(url).hostname or ""
         return hostname.endswith("tiktok.com")
 
+    def _is_douyin_url(self, url: str) -> bool:
+        hostname = urlparse(url).hostname or ""
+        return hostname.endswith("douyin.com")
+
     def _clean_url(self, url: str) -> str:
         parsed = urlparse(url.strip())
         if not parsed.scheme or not parsed.netloc:
@@ -419,10 +430,48 @@ class VideoDownloader:
             self.logger(f"Could not resolve TikTok share URL, using original: {exc}")
         return cleaned
 
+    def _normalize_douyin_url(self, url: str) -> str:
+        parsed = urlparse(url)
+        match = re.search(r"/(?:share/)?video/(\d+)", parsed.path)
+        if match:
+            return f"https://www.douyin.com/video/{match.group(1)}"
+        return url
+
+    def _resolve_douyin_short_url(self, url: str) -> str:
+        cleaned = self._clean_url(url)
+        parsed = urlparse(cleaned)
+        hostname = (parsed.hostname or "").lower()
+        if hostname not in {"v.douyin.com"}:
+            return self._normalize_douyin_url(cleaned)
+
+        try:
+            response = requests.get(
+                cleaned,
+                allow_redirects=True,
+                timeout=12,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+                        "Mobile/15E148 Safari/604.1"
+                    ),
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                },
+            )
+            resolved = self._normalize_douyin_url(self._clean_url(response.url))
+            if resolved and resolved != cleaned:
+                self.logger(f"Resolved Douyin share URL: {resolved}")
+                return resolved
+        except Exception as exc:
+            self.logger(f"Could not resolve Douyin share URL, using original: {exc}")
+        return cleaned
+
     def prepare_url(self, url: str) -> str:
         cleaned = self._clean_url(url)
         if self._is_tiktok_url(cleaned):
             return self._resolve_tiktok_short_url(cleaned)
+        if self._is_douyin_url(cleaned):
+            return self._resolve_douyin_short_url(cleaned)
         return cleaned
 
     def _decode_js_string(self, value: str) -> str:
@@ -524,8 +573,25 @@ class VideoDownloader:
             "_antidown_direct": True,
         }
 
-    def _default_cookie_file(self) -> Path:
-        return self.output_dir / "cookies.txt"
+    def _cookie_site_for_url(self, url: str | None) -> str | None:
+        hostname = (urlparse(url or "").hostname or "").lower().strip(".")
+        for site, hosts in COOKIE_SITE_HOSTS.items():
+            if any(hostname == host or hostname.endswith(f".{host}") for host in hosts):
+                return site
+        return None
+
+    def _default_cookie_files(self, url: str | None = None) -> list[Path]:
+        candidates = []
+        site = self._cookie_site_for_url(url)
+        if site:
+            candidates.extend(
+                [
+                    self.output_dir / "cookies" / f"{site}.cookies.txt",
+                    self.output_dir / f"{site}.cookies.txt",
+                ]
+            )
+        candidates.append(self.output_dir / "cookies.txt")
+        return candidates
 
     def _browser_cookie_source(self) -> str | None:
         browsers = {
@@ -535,14 +601,15 @@ class VideoDownloader:
         }
         return browsers.get(self.cookie_mode)
 
-    def _apply_cookie_options(self, opts: dict) -> None:
+    def _apply_cookie_options(self, opts: dict, url: str | None = None) -> None:
         if self.cookie_mode == COOKIE_MODE_AUTO_FILE:
-            cookie_file = self._default_cookie_file()
-            if cookie_file.exists():
+            cookie_files = self._default_cookie_files(url)
+            cookie_file = next((path for path in cookie_files if path.exists()), None)
+            if cookie_file:
                 opts["cookiefile"] = str(cookie_file)
                 self.logger(f"Using cookies file: {cookie_file}")
             else:
-                self.logger(f"No cookies file found at: {cookie_file}")
+                self.logger(f"No cookies file found. Checked: {', '.join(str(path) for path in cookie_files)}")
             return
 
         if self.cookie_mode == COOKIE_MODE_CUSTOM_FILE:
@@ -581,7 +648,7 @@ class VideoDownloader:
         }
         if self.ffmpeg_location:
             opts["ffmpeg_location"] = self.ffmpeg_location
-        self._apply_cookie_options(opts)
+        self._apply_cookie_options(opts, url)
         if url and self._is_tiktok_url(url):
             if platform == "android":
                 opts["http_headers"] = TIKTOK_HEADERS
@@ -665,24 +732,48 @@ class VideoDownloader:
 
         return rows
 
+    def _is_audio_only_format(self, info: dict, format_id: str) -> bool:
+        if format_id == "bestaudio/best":
+            return True
+        for item in info.get("formats") or []:
+            if item.get("format_id") == format_id:
+                vcodec = item.get("vcodec") or ""
+                acodec = item.get("acodec") or ""
+                return bool(acodec and acodec != "none" and (not vcodec or vcodec == "none"))
+        return False
+
     def download(self, url: str, format_id: str) -> None:
         url = self.prepare_url(url)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        outtmpl = str(self.output_dir / "%(title).80B [%(id)s] [%(format_id)s].%(ext)s")
 
         info = self.extract_info(url)
         opts = self._base_options(url, tiktok_fallback=self._is_tiktok_url(url))
         if info.get("_antidown_cookiefile"):
             opts["cookiefile"] = info["_antidown_cookiefile"]
             self.logger("Using TikTok session cookies for direct download.")
+        is_audio_only = self._is_audio_only_format(info, format_id)
+        outtmpl = str(self.output_dir / "%(title).80B [%(id)s] [%(format_id)s].%(ext)s")
         opts.update(
             {
                 "format": format_id,
                 "outtmpl": outtmpl,
-                "merge_output_format": "mp4",
                 "progress_hooks": [self._progress_hook],
             }
         )
+        if is_audio_only:
+            if self.ffmpeg_location:
+                opts["postprocessors"] = [
+                    {
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3",
+                        "preferredquality": "192",
+                    }
+                ]
+                self.logger("Audio-only mode: extracting MP3 with ffmpeg.")
+            else:
+                self.logger("Audio-only mode: ffmpeg not found, saving original audio container.")
+        else:
+            opts["merge_output_format"] = "mp4"
 
         self.logger(f"Saving to: {self.output_dir}")
         if self.ffmpeg_location:

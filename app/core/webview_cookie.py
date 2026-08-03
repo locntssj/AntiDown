@@ -11,6 +11,8 @@ from app.core.downloader import get_download_dir
 COMMON_COOKIE_URLS = (
     "https://www.tiktok.com",
     "https://m.tiktok.com",
+    "https://www.douyin.com",
+    "https://v.douyin.com",
     "https://www.youtube.com",
     "https://accounts.google.com",
     "https://www.facebook.com",
